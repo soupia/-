@@ -1,5 +1,6 @@
 import express, { Request, Response } from "express";
 import path from "path";
+import fs from "fs";
 import dotenv from "dotenv";
 import { GoogleGenAI, Type } from "@google/genai";
 import { fileURLToPath } from "url";
@@ -15,20 +16,23 @@ const PORT = 3000;
 
 app.use(express.json());
 
+// Persistent Storage File Path
+const DATA_DIR = path.join(process.cwd(), "data");
+const DATA_FILE = path.join(DATA_DIR, "store.json");
+
 // In-Memory Storage for Rooms and Reflections
 const rooms = new Map<string, Room>();
 const reflections = new Map<string, Reflection[]>();
 
-// Seed a Demo Room for instant testing
 const DEMO_ROOM_CODE = "DEMO1";
-rooms.set(DEMO_ROOM_CODE, {
+const DEFAULT_DEMO_ROOM: Room = {
   id: DEMO_ROOM_CODE,
   teacherName: "3학년 2반 김민지 선생님",
   targetGrade: "초등학교 4~6학년",
   createdAt: new Date(Date.now() - 3600 * 1000 * 24 * 3).toISOString(),
-});
+};
 
-reflections.set(DEMO_ROOM_CODE, [
+const DEFAULT_DEMO_REFLECTIONS: Reflection[] = [
   {
     id: "demo-ref-1",
     roomCode: DEMO_ROOM_CODE,
@@ -94,7 +98,58 @@ reflections.set(DEMO_ROOM_CODE, [
     depthLevel: 2,
     createdAt: new Date(Date.now() - 3600 * 1000 * 4).toISOString(),
   },
-]);
+];
+
+// Load persisted data
+function loadPersistedData() {
+  try {
+    if (fs.existsSync(DATA_FILE)) {
+      const raw = fs.readFileSync(DATA_FILE, "utf-8");
+      const parsed = JSON.parse(raw);
+      if (parsed.rooms && Array.isArray(parsed.rooms)) {
+        parsed.rooms.forEach((r: Room) => {
+          if (r && r.id) rooms.set(r.id, r);
+        });
+      }
+      if (parsed.reflections && typeof parsed.reflections === "object") {
+        Object.entries(parsed.reflections).forEach(([code, list]) => {
+          if (Array.isArray(list)) {
+            reflections.set(code, list as Reflection[]);
+          }
+        });
+      }
+    }
+  } catch (err) {
+    console.warn("Failed to load persisted data:", err);
+  }
+
+  // Ensure DEMO1 exists
+  if (!rooms.has(DEMO_ROOM_CODE)) {
+    rooms.set(DEMO_ROOM_CODE, DEFAULT_DEMO_ROOM);
+  }
+  if (!reflections.has(DEMO_ROOM_CODE)) {
+    reflections.set(DEMO_ROOM_CODE, DEFAULT_DEMO_REFLECTIONS);
+  }
+}
+
+// Save persisted data
+function savePersistedData() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    const data = {
+      rooms: Array.from(rooms.values()),
+      reflections: Object.fromEntries(reflections.entries()),
+    };
+    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Failed to save persisted data:", err);
+  }
+}
+
+// Initialize data
+loadPersistedData();
 
 // Helper: Generate Gemini client
 function getGeminiClient(customApiKey?: string) {
@@ -209,6 +264,7 @@ app.post("/api/rooms", (req: Request, res: Response) => {
     if (!reflections.has(code)) {
       reflections.set(code, []);
     }
+    savePersistedData();
 
     res.json({ success: true, room: newRoom });
   } catch (err: any) {
@@ -250,6 +306,7 @@ app.patch("/api/rooms/:code", (req: Request, res: Response) => {
   const { targetGrade, teacherName } = req.body;
   if (targetGrade) room.targetGrade = targetGrade;
   if (teacherName) room.teacherName = teacherName;
+  savePersistedData();
 
   res.json({ success: true, room });
 });
@@ -309,6 +366,7 @@ app.post("/api/rooms/:code/reflections", (req: Request, res: Response) => {
   const list = reflections.get(code) || [];
   list.unshift(newRef);
   reflections.set(code, list);
+  savePersistedData();
 
   res.json({ success: true, reflection: newRef });
 });

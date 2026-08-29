@@ -72,9 +72,23 @@ export default function App() {
 
   // Fetch Room info & reflections
   const fetchRoomData = useCallback(async (code: string, currentStudent?: string) => {
+    if (!code) return;
     try {
       const roomRes = await fetch(`/api/rooms/${code}`);
-      if (!roomRes.ok) throw new Error("방을 찾을 수 없습니다.");
+      if (roomRes.status === 404) {
+        // Room no longer exists on server (e.g. invalid code or reset)
+        localStorage.removeItem("reflectionApp_teacher");
+        localStorage.removeItem("reflectionApp_student");
+        setRole(null);
+        setRoomCode(null);
+        setStudentName("");
+        setRoom(null);
+        setReflections([]);
+        setView("landing");
+        return;
+      }
+      if (!roomRes.ok) return;
+
       const roomData: Room = await roomRes.json();
       setRoom(roomData);
 
@@ -88,45 +102,53 @@ export default function App() {
         setReflections(refData.reflections || []);
       }
     } catch (err) {
-      console.error("fetchRoomData error:", err);
+      // Gracefully handle momentary network interruptions or background polling
+      console.warn("fetchRoomData notice:", err);
     }
   }, []);
 
   // Restore Session on mount
   useEffect(() => {
+    let isMounted = true;
     const restoreSession = async () => {
       try {
         const teacherSaved = localStorage.getItem("reflectionApp_teacher");
         if (teacherSaved) {
           const { code } = JSON.parse(teacherSaved);
-          const res = await fetch(`/api/rooms/${code}`);
-          if (res.ok) {
-            const r: Room = await res.json();
-            setRole("teacher");
-            setRoomCode(code);
-            setRoom(r);
-            setView("teacher-dashboard");
-            await fetchRoomData(code);
-            return;
+          if (code) {
+            const res = await fetch(`/api/rooms/${code}`).catch(() => null);
+            if (res && res.ok && isMounted) {
+              const r: Room = await res.json();
+              setRole("teacher");
+              setRoomCode(code);
+              setRoom(r);
+              setView("teacher-dashboard");
+              await fetchRoomData(code);
+              return;
+            } else if (res && res.status === 404) {
+              localStorage.removeItem("reflectionApp_teacher");
+            }
           }
-          localStorage.removeItem("reflectionApp_teacher");
         }
 
         const studentSaved = localStorage.getItem("reflectionApp_student");
         if (studentSaved) {
           const { code, name } = JSON.parse(studentSaved);
-          const res = await fetch(`/api/rooms/${code}`);
-          if (res.ok) {
-            const r: Room = await res.json();
-            setRole("student");
-            setRoomCode(code);
-            setStudentName(name);
-            setRoom(r);
-            setView("student-home");
-            await fetchRoomData(code, name);
-            return;
+          if (code && name) {
+            const res = await fetch(`/api/rooms/${code}`).catch(() => null);
+            if (res && res.ok && isMounted) {
+              const r: Room = await res.json();
+              setRole("student");
+              setRoomCode(code);
+              setStudentName(name);
+              setRoom(r);
+              setView("student-home");
+              await fetchRoomData(code, name);
+              return;
+            } else if (res && res.status === 404) {
+              localStorage.removeItem("reflectionApp_student");
+            }
           }
-          localStorage.removeItem("reflectionApp_student");
         }
       } catch (e) {
         console.warn("Session restore skipped:", e);
@@ -134,11 +156,14 @@ export default function App() {
     };
 
     restoreSession();
+    return () => {
+      isMounted = false;
+    };
   }, [fetchRoomData]);
 
   // Periodic polling for room data updates
   useEffect(() => {
-    if (!roomCode) return;
+    if (!roomCode || view === "landing" || view === "teacher-setup") return;
     const interval = setInterval(() => {
       if (view === "teacher-dashboard") {
         fetchRoomData(roomCode);
