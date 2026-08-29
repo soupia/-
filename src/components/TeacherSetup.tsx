@@ -10,8 +10,10 @@ import {
   AlertCircle,
   Loader2,
   KeyRound,
+  ExternalLink,
 } from "lucide-react";
 import { GradeLevel } from "../types";
+import { validateGeminiApiKey, sanitizeApiKey } from "../utils/geminiClient";
 
 interface TeacherSetupProps {
   onBack: () => void;
@@ -38,12 +40,8 @@ export const TeacherSetup: React.FC<TeacherSetupProps> = ({
     message?: string;
   } | null>(null);
 
-  const cleanApiKey = (key: string) => {
-    return key.trim().replace(/^["']|["']$/g, "").trim();
-  };
-
   const handleTestApiKey = async () => {
-    const cleaned = cleanApiKey(geminiApiKey);
+    const cleaned = sanitizeApiKey(geminiApiKey);
     if (!cleaned) {
       setKeyValidationStatus({
         tested: true,
@@ -58,31 +56,17 @@ export const TeacherSetup: React.FC<TeacherSetupProps> = ({
     setError(null);
 
     try {
-      const res = await fetch("/api/validate-key", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: cleaned }),
+      const result = await validateGeminiApiKey(cleaned);
+      setKeyValidationStatus({
+        tested: true,
+        valid: result.valid,
+        message: result.message,
       });
-      const data = await res.json();
-
-      if (res.ok && data.valid) {
-        setKeyValidationStatus({
-          tested: true,
-          valid: true,
-          message: "정상적으로 인증된 Gemini API 키입니다.",
-        });
-      } else {
-        setKeyValidationStatus({
-          tested: true,
-          valid: false,
-          message: data.error || "유효하지 않은 API 키입니다.",
-        });
-      }
     } catch (err: any) {
       setKeyValidationStatus({
         tested: true,
         valid: false,
-        message: "API 키 검증 중 네트워크 오류가 발생했습니다.",
+        message: "API 키 검증 중 오류가 발생했습니다. 네트워크 연결을 확인해주세요.",
       });
     } finally {
       setIsValidatingKey(false);
@@ -98,7 +82,7 @@ export const TeacherSetup: React.FC<TeacherSetupProps> = ({
       return;
     }
 
-    const cleanedKey = cleanApiKey(geminiApiKey);
+    const cleanedKey = sanitizeApiKey(geminiApiKey);
 
     try {
       await onCreateRoom(
@@ -251,11 +235,25 @@ export const TeacherSetup: React.FC<TeacherSetupProps> = ({
               </div>
             )}
 
-            <div className="mt-2 p-3 bg-sky-50 border border-sky-100 rounded-xl text-xs text-sky-800 leading-relaxed flex items-start gap-2">
-              <Sparkles className="w-4 h-4 text-sky-600 shrink-0 mt-0.5" />
-              <span>
-                별도의 키 입력 없이도 AI 스튜디오의 <b>Gemini 3.7 Flash</b> 엔진이 기본 내장되어 있어 질문과 성찰 깊이 분석을 바로 사용하실 수 있습니다.
-              </span>
+            <div className="mt-2 p-3 bg-sky-50 border border-sky-100 rounded-xl text-xs text-sky-800 leading-relaxed space-y-1.5">
+              <div className="flex items-start gap-2">
+                <Sparkles className="w-4 h-4 text-sky-600 shrink-0 mt-0.5" />
+                <span>
+                  별도의 키 입력 없이도 AI 스튜디오의 <b>Gemini 3.7 Flash</b> 엔진이 기본 내장되어 있어 질문과 성찰 깊이 분석을 바로 사용하실 수 있습니다.
+                </span>
+              </div>
+              <div className="pt-1 text-slate-500 flex items-center justify-between border-t border-sky-200/60">
+                <span>자신의 전용 키를 사용하시려면:</span>
+                <a
+                  href="https://aistudio.google.com/app/apikey"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-bold text-sky-700 hover:text-sky-900 inline-flex items-center gap-1 underline"
+                >
+                  <span>Google AI Studio 키 발급</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
             </div>
           </div>
 

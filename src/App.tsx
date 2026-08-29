@@ -75,35 +75,43 @@ export default function App() {
     if (!code) return;
     try {
       const roomRes = await fetch(`/api/rooms/${code}`);
-      if (roomRes.status === 404) {
-        // Room no longer exists on server (e.g. invalid code or reset)
-        localStorage.removeItem("reflectionApp_teacher");
-        localStorage.removeItem("reflectionApp_student");
-        setRole(null);
-        setRoomCode(null);
-        setStudentName("");
-        setRoom(null);
-        setReflections([]);
-        setView("landing");
-        return;
-      }
-      if (!roomRes.ok) return;
+      if (roomRes.ok) {
+        const roomData: Room = await roomRes.json();
+        setRoom(roomData);
 
-      const roomData: Room = await roomRes.json();
-      setRoom(roomData);
+        const refUrl = currentStudent
+          ? `/api/rooms/${code}/reflections?studentName=${encodeURIComponent(currentStudent)}`
+          : `/api/rooms/${code}/reflections`;
 
-      const refUrl = currentStudent
-        ? `/api/rooms/${code}/reflections?studentName=${encodeURIComponent(currentStudent)}`
-        : `/api/rooms/${code}/reflections`;
-
-      const refRes = await fetch(refUrl);
-      if (refRes.ok) {
-        const refData = await refRes.json();
-        setReflections(refData.reflections || []);
+        const refRes = await fetch(refUrl);
+        if (refRes.ok) {
+          const refData = await refRes.json();
+          setReflections(refData.reflections || []);
+          return;
+        }
       }
     } catch (err) {
-      // Gracefully handle momentary network interruptions or background polling
       console.warn("fetchRoomData notice:", err);
+    }
+
+    // Fallback: check local storage database (for Vercel/static deployment)
+    try {
+      const localRooms: Record<string, Room> = JSON.parse(
+        localStorage.getItem("reflectionApp_local_rooms") || "{}"
+      );
+      if (localRooms[code]) {
+        setRoom(localRooms[code]);
+        const localRefs: Reflection[] = JSON.parse(
+          localStorage.getItem(`reflectionApp_local_reflections_${code}`) || "[]"
+        );
+        if (currentStudent) {
+          setReflections(localRefs.filter((r) => r.studentName === currentStudent));
+        } else {
+          setReflections(localRefs);
+        }
+      }
+    } catch (e) {
+      console.warn("Local room fallback failed:", e);
     }
   }, []);
 
@@ -125,8 +133,18 @@ export default function App() {
               setView("teacher-dashboard");
               await fetchRoomData(code);
               return;
-            } else if (res && res.status === 404) {
-              localStorage.removeItem("reflectionApp_teacher");
+            } else {
+              const localRooms: Record<string, Room> = JSON.parse(
+                localStorage.getItem("reflectionApp_local_rooms") || "{}"
+              );
+              if (localRooms[code] && isMounted) {
+                setRole("teacher");
+                setRoomCode(code);
+                setRoom(localRooms[code]);
+                setView("teacher-dashboard");
+                await fetchRoomData(code);
+                return;
+              }
             }
           }
         }
@@ -145,8 +163,20 @@ export default function App() {
               setView("student-home");
               await fetchRoomData(code, name);
               return;
-            } else if (res && res.status === 404) {
-              localStorage.removeItem("reflectionApp_student");
+            } else {
+              const localRooms: Record<string, Room> = JSON.parse(
+                localStorage.getItem("reflectionApp_local_rooms") || "{}"
+              );
+              if (localRooms[code] && isMounted) {
+                setRole("student");
+                setRole("student");
+                setRoomCode(code);
+                setStudentName(name);
+                setRoom(localRooms[code]);
+                setView("student-home");
+                await fetchRoomData(code, name);
+                return;
+              }
             }
           }
         }
@@ -179,11 +209,37 @@ export default function App() {
   const handleJoinStudent = async (code: string, name: string) => {
     setIsLoading(true);
     try {
-      const res = await fetch(`/api/rooms/${code}`);
-      if (!res.ok) {
+      let roomData: Room | null = null;
+
+      try {
+        const res = await fetch(`/api/rooms/${code}`);
+        if (res.ok) {
+          roomData = await res.json();
+        }
+      } catch (_) {
+        // static Vercel
+      }
+
+      // Check local storage fallback
+      if (!roomData) {
+        const localRooms: Record<string, Room> = JSON.parse(
+          localStorage.getItem("reflectionApp_local_rooms") || "{}"
+        );
+        if (localRooms[code]) {
+          roomData = localRooms[code];
+        } else if (code === "DEMO1") {
+          roomData = {
+            id: "DEMO1",
+            teacherName: "3학년 2반 김민지 선생님",
+            targetGrade: "초등학교 4~6학년",
+            createdAt: new Date().toISOString(),
+          };
+        }
+      }
+
+      if (!roomData) {
         throw new Error("존재하지 않는 방 코드입니다.\n선생님께 방 코드를 다시 확인해주세요.");
       }
-      const roomData: Room = await res.json();
 
       setRole("student");
       setRoomCode(code);
@@ -209,21 +265,48 @@ export default function App() {
     setIsLoading(true);
     try {
       const cleanKey = apiKey ? apiKey.trim().replace(/^["']|["']$/g, "") : undefined;
-      const res = await fetch("/api/rooms", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      let newRoom: Room | null = null;
+
+      try {
+        const res = await fetch("/api/rooms", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            teacherName: teacherName.trim(),
+            targetGrade: grade,
+            geminiApiKey: cleanKey && cleanKey.length > 0 ? cleanKey : undefined,
+          }),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          newRoom = data.room;
+        }
+      } catch (_) {
+        // static Vercel
+      }
+
+      if (!newRoom) {
+        const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+        let generatedCode = "";
+        for (let i = 0; i < 5; i++) {
+          generatedCode += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+
+        newRoom = {
+          id: generatedCode,
           teacherName: teacherName.trim(),
           targetGrade: grade,
           geminiApiKey: cleanKey && cleanKey.length > 0 ? cleanKey : undefined,
-        }),
-      });
+          createdAt: new Date().toISOString(),
+        };
 
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data?.error || "방 생성에 실패했습니다. 다시 시도해주세요.");
+        const localRooms = JSON.parse(
+          localStorage.getItem("reflectionApp_local_rooms") || "{}"
+        );
+        localRooms[generatedCode] = newRoom;
+        localStorage.setItem("reflectionApp_local_rooms", JSON.stringify(localRooms));
       }
-      const newRoom: Room = data.room;
 
       setRole("teacher");
       setRoomCode(newRoom.id);
@@ -343,6 +426,8 @@ export default function App() {
             roomCode={roomCode}
             studentName={studentName}
             previousCount={reflections.length}
+            targetGrade={room?.targetGrade}
+            customApiKey={room?.geminiApiKey}
             onComplete={handleReflectionComplete}
             onBackToHome={() => {
               showConfirm("작성 중인 성찰 내용이 사라집니다. 목록으로 돌아갈까요?", () => {

@@ -12,13 +12,16 @@ import {
   Loader2,
 } from "lucide-react";
 import confetti from "canvas-confetti";
-import { SubjectType, Reflection, BadgeInfo } from "../types";
+import { SubjectType, Reflection, BadgeInfo, GradeLevel } from "../types";
 import { SUBJECT_OPTIONS, BADGES } from "../data/badges";
+import { generateQuestionDirect, classifyDepthDirect } from "../utils/geminiClient";
 
 interface ReflectionFlowProps {
   roomCode: string;
   studentName: string;
   previousCount: number;
+  targetGrade?: GradeLevel;
+  customApiKey?: string;
   onComplete: (newReflection: Reflection) => void;
   onBackToHome: () => void;
   onRequestAlert: (msg: string) => void;
@@ -28,6 +31,8 @@ export const ReflectionFlow: React.FC<ReflectionFlowProps> = ({
   roomCode,
   studentName,
   previousCount,
+  targetGrade = "초등학교 4~6학년",
+  customApiKey,
   onComplete,
   onBackToHome,
   onRequestAlert,
@@ -76,6 +81,11 @@ export const ReflectionFlow: React.FC<ReflectionFlowProps> = ({
     setLoadingTitle("AI 선생님이 기록을 읽고 있습니다...");
     setLoadingDesc("생각을 넓혀줄 소크라테스 질문을 준비 중이에요.");
 
+    let generatedQuestion = "";
+    let generatedHint = "";
+    let fallbackUsed = false;
+
+    // 1. Try Backend Proxy
     try {
       const res = await fetch("/api/generate-question", {
         method: "POST",
@@ -87,24 +97,52 @@ export const ReflectionFlow: React.FC<ReflectionFlowProps> = ({
         }),
       });
 
-      if (!res.ok) throw new Error("질문 생성 실패");
-      const data = await res.json();
-
-      setAiQuestion(data.question || "이 내용을 일상생활에서 어떻게 적용해볼 수 있을까요?");
-      setAiHint(data.hint || "우리 주변의 경험과 비교해보세요.");
-      setIsFallback(Boolean(data.fallback));
-      setStep(2);
-    } catch (err) {
-      console.error(err);
-      setAiQuestion("이 내용을 배운 후, 일상생활에서 비슷하게 적용할 수 있는 상황은 무엇이 있을까요?");
-      setAiHint("주말에 가족과 함께 있거나 길을 걸을 때 마주치는 상황을 떠올려보세요.");
-      setIsFallback(true);
-      setStep(2);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.question) {
+          generatedQuestion = data.question;
+          generatedHint = data.hint || "";
+          fallbackUsed = Boolean(data.fallback);
+        }
+      }
+    } catch (_) {
+      // Backend not available (e.g. Vercel static deployment)
     }
+
+    // 2. Direct Gemini Call if customApiKey is available and backend didn't answer
+    if (!generatedQuestion && customApiKey) {
+      try {
+        const directData = await generateQuestionDirect(
+          customApiKey,
+          selectedSubject,
+          targetGrade,
+          trimmed
+        );
+        generatedQuestion = directData.question;
+        generatedHint = directData.hint;
+        fallbackUsed = false;
+      } catch (err) {
+        console.warn("Direct Gemini question generation failed:", err);
+      }
+    }
+
+    // 3. Dynamic Pedagogical Fallback
+    if (!generatedQuestion) {
+      generatedQuestion = `오늘 배운 [${selectedSubject}]의 내용(${trimmed.slice(0, 15)}...)을 우리의 일상생활이나 다른 문제에 어떻게 연결해볼 수 있을까요?`;
+      generatedHint = "내가 겪었던 비슷한 경험이나, 친구나 가족에게 설명해준다면 어떻게 말할지 떠올려보세요.";
+      fallbackUsed = true;
+    }
+
+    setAiQuestion(generatedQuestion);
+    setAiHint(generatedHint);
+    setIsFallback(fallbackUsed);
+    setStep(2);
   };
 
   // Step 2 Submission (or Skip)
   const handleFinishReflection = async (secondInput: string) => {
+    if (!selectedSubject) return;
+
     setStep("loading");
     setLoadingTitle("성찰 깊이를 분석하고 저장 중입니다...");
     setLoadingDesc("잠시만 기다려주세요.");
@@ -112,6 +150,8 @@ export const ReflectionFlow: React.FC<ReflectionFlowProps> = ({
     try {
       // 1. Classify depth with Gemini
       let depthLevel: 1 | 2 | 3 | 4 = secondInput ? 2 : 1;
+
+      // 1a. Try Backend
       try {
         const classRes = await fetch("/api/classify-depth", {
           method: "POST",
@@ -129,15 +169,67 @@ export const ReflectionFlow: React.FC<ReflectionFlowProps> = ({
             depthLevel = depthData.level as 1 | 2 | 3 | 4;
           }
         }
-      } catch (e) {
-        console.warn("Classify depth fallback:", e);
+      } catch (_) {
+        // Try direct call if custom key available
+        if (customApiKey && secondInput) {
+          try {
+            depthLevel = await classifyDepthDirect(
+              customApiKey,
+              selectedSubject,
+              text1,
+              secondInput
+            );
+          } catch (e) {
+            console.warn("Direct depth classification failed:", e);
+          }
+        }
       }
 
-      // 2. Save reflection to Room
-      const saveRes = await fetch(`/api/rooms/${roomCode}/reflections`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      // Heuristic enhancement if depth is still default
+      if (secondInput && secondInput.length > 20 && depthLevel < 3) {
+        if (
+          secondInput.includes("때문") ||
+          secondInput.includes("이유") ||
+          secondInput.includes("생각") ||
+          secondInput.includes("적용") ||
+          secondInput.includes("생활") ||
+          secondInput.includes("실천")
+        ) {
+          depthLevel = secondInput.length > 40 ? 3 : 2;
+        }
+      }
+
+      // 2. Save reflection
+      let newRef: Reflection | null = null;
+      try {
+        const saveRes = await fetch(`/api/rooms/${roomCode}/reflections`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            studentName,
+            subject: selectedSubject,
+            subjectColor: selectedSubjectColor,
+            text1,
+            aiQuestion,
+            aiHint,
+            text2: secondInput,
+            depthLevel,
+          }),
+        });
+
+        if (saveRes.ok) {
+          const saveData = await saveRes.json();
+          newRef = saveData.reflection;
+        }
+      } catch (_) {
+        // Backend not available (Vercel static hosting)
+      }
+
+      // Local storage fallback for Vercel / GitHub Pages
+      if (!newRef) {
+        newRef = {
+          id: `ref-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          roomCode,
           studentName,
           subject: selectedSubject,
           subjectColor: selectedSubjectColor,
@@ -146,12 +238,17 @@ export const ReflectionFlow: React.FC<ReflectionFlowProps> = ({
           aiHint,
           text2: secondInput,
           depthLevel,
-        }),
-      });
+          createdAt: new Date().toISOString(),
+        };
 
-      if (!saveRes.ok) throw new Error("저장 실패");
-      const saveData = await saveRes.json();
-      const newRef: Reflection = saveData.reflection;
+        try {
+          const localKey = `reflectionApp_local_reflections_${roomCode}`;
+          const existing = JSON.parse(localStorage.getItem(localKey) || "[]");
+          localStorage.setItem(localKey, JSON.stringify([newRef, ...existing]));
+        } catch (e) {
+          console.warn("Local storage save error:", e);
+        }
+      }
 
       // 3. Check Badge Unlock
       const newTotal = previousCount + 1;
