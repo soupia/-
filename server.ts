@@ -98,10 +98,16 @@ reflections.set(DEMO_ROOM_CODE, [
 
 // Helper: Generate Gemini client
 function getGeminiClient(customApiKey?: string) {
-  const apiKey = customApiKey || process.env.GEMINI_API_KEY;
+  const cleanCustom =
+    customApiKey && typeof customApiKey === "string"
+      ? customApiKey.trim().replace(/^["']|["']$/g, "").trim()
+      : undefined;
+
+  const apiKey = (cleanCustom && cleanCustom.length > 0) ? cleanCustom : process.env.GEMINI_API_KEY;
   if (!apiKey) return null;
+
   return new GoogleGenAI({
-    apiKey,
+    apiKey: apiKey.trim().replace(/^["']|["']$/g, ""),
     httpOptions: {
       headers: {
         "User-Agent": "aistudio-build",
@@ -119,6 +125,46 @@ app.get("/api/health", (_req: Request, res: Response) => {
   res.json({ status: "ok", time: new Date().toISOString() });
 });
 
+// 1-1. Validate Custom Gemini API Key
+app.post("/api/validate-key", async (req: Request, res: Response) => {
+  const { apiKey } = req.body;
+  const keyToTest = (apiKey && typeof apiKey === "string" ? apiKey : "")
+    .trim()
+    .replace(/^["']|["']$/g, "")
+    .trim();
+
+  if (!keyToTest) {
+    res.status(400).json({ valid: false, error: "API 키를 입력해주세요." });
+    return;
+  }
+
+  try {
+    const ai = new GoogleGenAI({
+      apiKey: keyToTest,
+      httpOptions: { headers: { "User-Agent": "aistudio-build" } },
+    });
+    // Test with a quick lightweight call
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: "Hi",
+    });
+    if (response && response.text) {
+      res.json({ valid: true, message: "유효한 Gemini API 키입니다." });
+    } else {
+      res.json({ valid: true, message: "Gemini API 연결 확인 완료" });
+    }
+  } catch (err: any) {
+    const msg = err?.message || String(err);
+    console.error("Custom API Key validation failed:", msg);
+    const userFriendlyError = msg.includes("API key not valid") || msg.includes("INVALID_ARGUMENT")
+      ? "입력하신 API 키가 유효하지 않습니다. Google AI Studio에서 생성한 키를 다시 확인해주세요."
+      : msg.includes("PERMISSION_DENIED")
+      ? "API 키 권한이 부족하거나 사용 제한된 키입니다."
+      : `API 키 검증 실패: ${msg}`;
+    res.status(400).json({ valid: false, error: userFriendlyError });
+  }
+});
+
 // 2. Generate Room Code
 function generateCode(): string {
   const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
@@ -131,34 +177,44 @@ function generateCode(): string {
 
 // 3. Create Room
 app.post("/api/rooms", (req: Request, res: Response) => {
-  const { teacherName, targetGrade, geminiApiKey } = req.body;
+  try {
+    const { teacherName, targetGrade, geminiApiKey } = req.body;
 
-  if (!teacherName || typeof teacherName !== "string") {
-    res.status(400).json({ error: "선생님 성함 또는 학급명을 입력해주세요." });
-    return;
+    if (!teacherName || typeof teacherName !== "string" || !teacherName.trim()) {
+      res.status(400).json({ error: "선생님 성함 또는 학급명을 입력해주세요." });
+      return;
+    }
+
+    let code = generateCode();
+    let attempts = 0;
+    while (rooms.has(code) && attempts < 10) {
+      code = generateCode();
+      attempts++;
+    }
+
+    const cleanKey =
+      geminiApiKey && typeof geminiApiKey === "string"
+        ? geminiApiKey.trim().replace(/^["']|["']$/g, "").trim()
+        : undefined;
+
+    const newRoom: Room = {
+      id: code,
+      teacherName: teacherName.trim(),
+      targetGrade: (targetGrade as GradeLevel) || "초등학교 4~6학년",
+      geminiApiKey: cleanKey && cleanKey.length > 0 ? cleanKey : undefined,
+      createdAt: new Date().toISOString(),
+    };
+
+    rooms.set(code, newRoom);
+    if (!reflections.has(code)) {
+      reflections.set(code, []);
+    }
+
+    res.json({ success: true, room: newRoom });
+  } catch (err: any) {
+    console.error("Create room exception:", err);
+    res.status(500).json({ error: err?.message || "방 생성 중 서버 오류가 발생했습니다." });
   }
-
-  let code = generateCode();
-  let attempts = 0;
-  while (rooms.has(code) && attempts < 10) {
-    code = generateCode();
-    attempts++;
-  }
-
-  const newRoom: Room = {
-    id: code,
-    teacherName: teacherName.trim(),
-    targetGrade: (targetGrade as GradeLevel) || "초등학교 4~6학년",
-    geminiApiKey: geminiApiKey ? geminiApiKey.trim() : undefined,
-    createdAt: new Date().toISOString(),
-  };
-
-  rooms.set(code, newRoom);
-  if (!reflections.has(code)) {
-    reflections.set(code, []);
-  }
-
-  res.json({ success: true, room: newRoom });
 });
 
 // 4. Get Room Info

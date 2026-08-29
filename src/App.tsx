@@ -183,13 +183,21 @@ export default function App() {
   ) => {
     setIsLoading(true);
     try {
+      const cleanKey = apiKey ? apiKey.trim().replace(/^["']|["']$/g, "") : undefined;
       const res = await fetch("/api/rooms", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ teacherName, targetGrade: grade, geminiApiKey: apiKey }),
+        body: JSON.stringify({
+          teacherName: teacherName.trim(),
+          targetGrade: grade,
+          geminiApiKey: cleanKey && cleanKey.length > 0 ? cleanKey : undefined,
+        }),
       });
-      if (!res.ok) throw new Error("방 생성에 실패했습니다.");
-      const data = await res.json();
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "방 생성에 실패했습니다. 다시 시도해주세요.");
+      }
       const newRoom: Room = data.room;
 
       setRole("teacher");
@@ -200,6 +208,9 @@ export default function App() {
       localStorage.setItem("reflectionApp_teacher", JSON.stringify({ code: newRoom.id }));
 
       await fetchRoomData(newRoom.id);
+    } catch (err: any) {
+      console.error("handleCreateRoom error:", err);
+      throw err;
     } finally {
       setIsLoading(false);
     }

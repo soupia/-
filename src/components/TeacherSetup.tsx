@@ -1,5 +1,16 @@
 import React, { useState } from "react";
-import { ArrowLeft, DoorOpen, Eye, EyeOff, ShieldAlert, Sparkles, GraduationCap } from "lucide-react";
+import {
+  ArrowLeft,
+  DoorOpen,
+  Eye,
+  EyeOff,
+  Sparkles,
+  GraduationCap,
+  CheckCircle2,
+  AlertCircle,
+  Loader2,
+  KeyRound,
+} from "lucide-react";
 import { GradeLevel } from "../types";
 
 interface TeacherSetupProps {
@@ -19,6 +30,65 @@ export const TeacherSetup: React.FC<TeacherSetupProps> = ({
   const [showApiKey, setShowApiKey] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Key validation state
+  const [isValidatingKey, setIsValidatingKey] = useState(false);
+  const [keyValidationStatus, setKeyValidationStatus] = useState<{
+    tested: boolean;
+    valid: boolean;
+    message?: string;
+  } | null>(null);
+
+  const cleanApiKey = (key: string) => {
+    return key.trim().replace(/^["']|["']$/g, "").trim();
+  };
+
+  const handleTestApiKey = async () => {
+    const cleaned = cleanApiKey(geminiApiKey);
+    if (!cleaned) {
+      setKeyValidationStatus({
+        tested: true,
+        valid: false,
+        message: "테스트할 API 키를 먼저 입력해주세요.",
+      });
+      return;
+    }
+
+    setIsValidatingKey(true);
+    setKeyValidationStatus(null);
+    setError(null);
+
+    try {
+      const res = await fetch("/api/validate-key", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: cleaned }),
+      });
+      const data = await res.json();
+
+      if (res.ok && data.valid) {
+        setKeyValidationStatus({
+          tested: true,
+          valid: true,
+          message: "정상적으로 인증된 Gemini API 키입니다.",
+        });
+      } else {
+        setKeyValidationStatus({
+          tested: true,
+          valid: false,
+          message: data.error || "유효하지 않은 API 키입니다.",
+        });
+      }
+    } catch (err: any) {
+      setKeyValidationStatus({
+        tested: true,
+        valid: false,
+        message: "API 키 검증 중 네트워크 오류가 발생했습니다.",
+      });
+    } finally {
+      setIsValidatingKey(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -28,8 +98,14 @@ export const TeacherSetup: React.FC<TeacherSetupProps> = ({
       return;
     }
 
+    const cleanedKey = cleanApiKey(geminiApiKey);
+
     try {
-      await onCreateRoom(teacherName.trim(), targetGrade, geminiApiKey.trim() || undefined);
+      await onCreateRoom(
+        teacherName.trim(),
+        targetGrade,
+        cleanedKey.length > 0 ? cleanedKey : undefined
+      );
     } catch (err: any) {
       setError(err?.message || "방 생성 중 오류가 발생했습니다.");
     }
@@ -111,28 +187,74 @@ export const TeacherSetup: React.FC<TeacherSetupProps> = ({
               </label>
               <span className="text-xs text-slate-400">비워두면 기본 서버 AI 키 적용</span>
             </div>
-            <div className="relative">
-              <input
-                id="teacher-apikey-input"
-                type={showApiKey ? "text" : "password"}
-                value={geminiApiKey}
-                onChange={(e) => setGeminiApiKey(e.target.value)}
-                placeholder="AIzaSy... (선택 사항)"
-                className="w-full p-3 pr-10 rounded-xl border border-slate-300 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-sky-500 focus:border-sky-500 outline-none transition text-slate-800 text-sm font-mono"
-              />
-              <button
-                id="teacher-apikey-toggle-btn"
-                type="button"
-                onClick={() => setShowApiKey(!showApiKey)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-              >
-                {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              </button>
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <input
+                  id="teacher-apikey-input"
+                  type={showApiKey ? "text" : "password"}
+                  value={geminiApiKey}
+                  onChange={(e) => {
+                    setGeminiApiKey(e.target.value);
+                    if (keyValidationStatus) setKeyValidationStatus(null);
+                  }}
+                  placeholder="AIzaSy... (선택 사항)"
+                  className="w-full p-3 pr-10 rounded-xl border border-slate-300 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-sky-500 focus:border-sky-500 outline-none transition text-slate-800 text-sm font-mono"
+                />
+                <button
+                  id="teacher-apikey-toggle-btn"
+                  type="button"
+                  onClick={() => setShowApiKey(!showApiKey)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                >
+                  {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+
+              {geminiApiKey.trim().length > 0 && (
+                <button
+                  type="button"
+                  id="test-api-key-btn"
+                  onClick={handleTestApiKey}
+                  disabled={isValidatingKey}
+                  className="px-3.5 py-2.5 rounded-xl border border-sky-300 bg-sky-50 hover:bg-sky-100 text-sky-700 font-bold text-xs shrink-0 flex items-center gap-1.5 transition disabled:opacity-50"
+                >
+                  {isValidatingKey ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>검증 중</span>
+                    </>
+                  ) : (
+                    <>
+                      <KeyRound className="w-3.5 h-3.5" />
+                      <span>키 검증</span>
+                    </>
+                  )}
+                </button>
+              )}
             </div>
+
+            {/* API Key Validation Status Badge */}
+            {keyValidationStatus && (
+              <div
+                className={`mt-2 p-2.5 rounded-xl text-xs font-medium flex items-center gap-2 ${
+                  keyValidationStatus.valid
+                    ? "bg-emerald-50 text-emerald-800 border border-emerald-200"
+                    : "bg-rose-50 text-rose-800 border border-rose-200"
+                }`}
+              >
+                {keyValidationStatus.valid ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                ) : (
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                )}
+                <span>{keyValidationStatus.message}</span>
+              </div>
+            )}
+
             <div className="mt-2 p-3 bg-sky-50 border border-sky-100 rounded-xl text-xs text-sky-800 leading-relaxed flex items-start gap-2">
               <Sparkles className="w-4 h-4 text-sky-600 shrink-0 mt-0.5" />
               <span>
-                별도의 키 입력 없이도 AI 스튜디오의 <b>Gemini 3.7 Flash</b> 엔진이 작동하여 예리한 소크라테스식 질문과 성찰 깊이 분석을 제공합니다.
+                별도의 키 입력 없이도 AI 스튜디오의 <b>Gemini 3.7 Flash</b> 엔진이 기본 내장되어 있어 질문과 성찰 깊이 분석을 바로 사용하실 수 있습니다.
               </span>
             </div>
           </div>
