@@ -1,0 +1,6 @@
+{
+  "name": "배움성찰노트",
+  "description": "소크라테스식 AI 질문 기반 배움 성찰 기록 및 교사용 학급 대시보드",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
